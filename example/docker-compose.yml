@@ -1,0 +1,27 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: outbox_postgres
+    restart: always
+    environment:
+      POSTGRES_DB: testdb
+      POSTGRES_USER: testuser
+      POSTGRES_PASSWORD: testpass
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  nats:
+    image: nats:latest
+    container_name: outbox_nats
+    restart: always
+    ports:
+      - "4322:4222"
+      - "8322:8222"
+
+volumes:
+  postgres_data:
