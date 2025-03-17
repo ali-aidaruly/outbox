@@ -1,38 +1,59 @@
-package repository
+package postgres_test
 
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
-	"github.com/jackc/pgx/v5/stdlib"
-	"github.com/testcontainers/testcontainers-go"
-	postgres2 "github.com/testcontainers/testcontainers-go/modules/postgres"
+	"github.com/docker/go-connections/nat"
+
 	"os/exec"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
-// Global test variables
-var TestDB *sql.DB
-var testContainer *postgres2.PostgresContainer
+var testDB *sql.DB
 
-// TestMain sets up the test container before running any tests.
 func TestMain(m *testing.M) {
 	ctx := context.Background()
-	container, err := postgres2.Run(ctx, "postgres:16-alpine")
+	container, err := postgres.Run(ctx,
+		"postgres:16-alpine",
+		postgres.WithDatabase("testdb"),
+		postgres.WithUsername("testuser"),
+		postgres.WithPassword("testpass"),
+	)
+
 	if err != nil {
 		log.Fatalf("Failed to start test container: %v", err)
 	}
-	testContainer = container
 
-	dbURL, err := container.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		log.Fatalf("Failed to get connection string: %v", err)
+	var mappedPort nat.Port
+	for i := 0; i < 10; i++ {
+		mappedPort, err = container.MappedPort(ctx, "5432/tcp")
+		if err == nil {
+			break
+		}
+		log.Printf("Waiting for mapped port... attempt %d", i+1)
+		time.Sleep(1 * time.Second)
 	}
 
-	TestDB, err = sql.Open("pgx", dbURL)
+	host, err := container.Host(ctx)
+	if err != nil {
+		log.Fatalf("Failed to get container host: %v", err)
+	}
+	dbURL := fmt.Sprintf("postgres://testuser:testpass@%s:%s/testdb?sslmode=disable", host, mappedPort.Port())
+
+	if err := waitForPostgres(host, mappedPort.Port()); err != nil {
+		log.Fatalf("PostgreSQL did not become ready: %v", err)
+	}
+
+	testDB, err = sql.Open("pgx", dbURL)
 	if err != nil {
 		log.Fatalf("Failed to connect to test database: %v", err)
 	}
@@ -50,19 +71,43 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+func waitForPostgres(host, port string) error {
+	maxRetries := 10
+	for i := 0; i < maxRetries; i++ {
+		cmd := exec.Command("pg_isready", "-h", host, "-p", port, "-U", "testuser", "-d", "testdb")
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("PostgreSQL did not become ready after %d retries", maxRetries)
+}
+
 func runMigrations(dbURL string) error {
-	migrationFiles, err := filepath.Glob("migrations/postgres/*.sql")
+	workingDir, err := os.Getwd()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get working directory: %w", err)
+	}
+
+	migrationDir := filepath.Join(workingDir, "../../../migrations/postgres")
+
+	migrationFiles := []string{
+		"0001_create_uuid_extension.sql",
+		"0002_create_outbox_table.sql",
+		"0003_add_indexes.sql",
+
+		"_testdata.sql",
 	}
 
 	for _, file := range migrationFiles {
-		cmd := exec.Command("psql", dbURL, "-f", file)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		migrationPath := filepath.Join(migrationDir, file)
+		cmd := exec.Command("psql", dbURL, "-f", migrationPath)
+
 		if err := cmd.Run(); err != nil {
 			return err
 		}
 	}
+
 	return nil
 }

@@ -1,16 +1,8 @@
 package outbox
 
 import (
-	"github.com/google/uuid"
-	"time"
+	"github.com/ali-aidaruly/outbox/internal/domain"
 )
 
-type Message struct {
-	ID      uuid.UUID
-	Type    string
-	Payload []byte
-
-	CreatedAt   time.Time
-	LeaseUntil  *time.Time
-	PublishedAt *time.Time
-}
+// Message is an alias for domain.Message, representing an outbox event message.
+type Message = domain.Message
